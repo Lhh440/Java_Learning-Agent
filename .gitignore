@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.env
+
+db/*.db
+*.log
+
+dist/
+build/
+*.exe
+*.spec
+
+.DS_Store

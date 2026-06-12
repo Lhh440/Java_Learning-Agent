@@ -1,14 +1,21 @@
 from PyQt6.QtWidgets import (
-    QMainWindow, QTabWidget, QWidget, QVBoxLayout, QHBoxLayout,
-    QTextEdit, QPushButton, QLabel, QListWidget, QListWidgetItem, QMessageBox
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QTextEdit, QPushButton, QLabel, QTabWidget, QListWidget, QListWidgetItem, QMessageBox
 )
-from db.database import add_chat_record, add_error_code, get_all_errors, get_random_question
-from core.agent_core import get_agent_reply, clear_context
+import json
+import os
+
+from db.database import add_chat_record, add_error_code, get_all_errors
+from core.agent_core import get_agent_reply
+from core.ollama_manager import stop_ollama_process
+from core.text_filter import clean_markdown
+
+CFG_PATH = "window_cfg.json"
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Java学习助学Agent")
+        self.setWindowTitle("Java学习助手Agent")
         self.resize(1000, 700)
 
         self.tab_widget = QTabWidget()
@@ -19,7 +26,39 @@ class MainWindow(QMainWindow):
         self.create_error_tab()
         self.create_exam_tab()
 
-    # 1 代码纠错标签页
+        # 加载窗口记忆
+        self.load_window_cfg()
+
+    def load_window_cfg(self):
+        if os.path.exists(CFG_PATH):
+            try:
+                with open(CFG_PATH, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                    x = cfg.get("x", 100)
+                    y = cfg.get("y", 100)
+                    w = cfg.get("w", 1000)
+                    h = cfg.get("h", 700)
+                    self.setGeometry(x, y, w, h)
+            except Exception:
+                pass
+
+    def save_window_cfg(self):
+        geo = self.geometry()
+        cfg = {
+            "x": geo.x(),
+            "y": geo.y(),
+            "w": geo.width(),
+            "h": geo.height()
+        }
+        with open(CFG_PATH, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+    def closeEvent(self, event):
+        self.save_window_cfg()
+        stop_ollama_process()
+        event.accept()
+
+    # ========== 代码纠错标签页 ==========
     def create_code_tab(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
@@ -46,139 +85,88 @@ class MainWindow(QMainWindow):
 
         self.btn_code_run.clicked.connect(self.on_code_analyze)
         self.btn_code_clear.clicked.connect(lambda: self.code_input.clear())
-        self.btn_code_save.clicked.connect(self.on_save_error)
+        self.btn_code_save.clicked.connect(self.save_code_error)
 
         self.tab_widget.addTab(tab, "代码纠错")
 
     def on_code_analyze(self):
         code = self.code_input.toPlainText().strip()
         if not code:
-            QMessageBox.warning(self, "提示", "请输入Java代码！")
+            QMessageBox.warning(self, "提示", "请输入Java代码")
             return
-        reply, chat_type = get_agent_reply(code)
-        self.code_output.setPlainText(reply)
-        add_chat_record(code, "user", chat_type)
-        add_chat_record(reply, "ai", chat_type)
+        self.code_output.setPlainText("AI思考中...")
+        raw = get_agent_reply(f"分析下面Java代码错误，给出修正和讲解：\n{code}")
+        safe_text = clean_markdown(raw)
+        self.code_output.setPlainText(safe_text)
 
-    def on_save_error(self):
+    def save_code_error(self):
         code = self.code_input.toPlainText().strip()
-        result = self.code_output.toPlainText().strip()
-        if not code or not result:
+        ans = self.code_output.toPlainText().strip()
+        if not code or not ans:
             QMessageBox.warning(self, "提示", "代码或解析结果不能为空")
             return
-        add_error_code(code, result, "", "Java代码错误")
+        add_error_code(code, ans, "", "")
         QMessageBox.information(self, "成功", "已存入错题本")
-        self.refresh_error_list()
 
-    # 2 知识点问答
+    # ========== 问答标签页 ==========
     def create_qa_tab(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
-
         self.qa_input = QTextEdit()
-        self.qa_input.setPlaceholderText("输入Java问题，例如：什么是重载和重写？")
+        self.qa_input.setPlaceholderText("输入你的Java问题...")
         self.qa_output = QTextEdit()
         self.qa_output.setReadOnly(True)
 
         btn_layout = QHBoxLayout()
-        self.btn_qa_send = QPushButton("提问")
-        self.btn_qa_clear = QPushButton("清空对话上下文")
+        btn_send = QPushButton("提问")
+        btn_clear_ctx = QPushButton("清空输出")
+        btn_layout.addWidget(btn_send)
+        btn_layout.addWidget(btn_clear_ctx)
 
-        btn_layout.addWidget(self.btn_qa_send)
-        btn_layout.addWidget(self.btn_qa_clear)
-
-        layout.addWidget(QLabel("你的问题"))
+        layout.addWidget(QLabel("问题"))
         layout.addWidget(self.qa_input)
         layout.addLayout(btn_layout)
-        layout.addWidget(QLabel("AI解答"))
+        layout.addWidget(QLabel("回答"))
         layout.addWidget(self.qa_output)
 
-        self.btn_qa_send.clicked.connect(self.on_qa_ask)
-        self.btn_qa_clear.clicked.connect(self.on_qa_clear)
-
+        btn_send.clicked.connect(self.on_qa_send)
+        btn_clear_ctx.clicked.connect(lambda: self.qa_output.clear())
         self.tab_widget.addTab(tab, "知识点问答")
 
-    def on_qa_ask(self):
+    def on_qa_send(self):
         q = self.qa_input.toPlainText().strip()
         if not q:
-            QMessageBox.warning(self, "提示", "请输入问题")
             return
-        reply, chat_type = get_agent_reply(q)
-        self.qa_output.append(f"【你】{q}\n【AI】{reply}\n\n")
-        add_chat_record(q, "user", chat_type)
-        add_chat_record(reply, "ai", chat_type)
+        self.qa_output.setPlainText("思考中...")
+        raw = get_agent_reply(q)
+        safe = clean_markdown(raw)
+        self.qa_output.setPlainText(safe)
+        add_chat_record(q, "user")
+        add_chat_record(safe, "assistant")
 
-    def on_qa_clear(self):
-        self.qa_input.clear()
-        self.qa_output.clear()
-        clear_context()
-
-    # 3 错题本
+    # ========== 错题本标签页 ==========
     def create_error_tab(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
         self.error_list = QListWidget()
-        layout.addWidget(QLabel("历史错题（点击查看详情）"))
+        refresh_btn = QPushButton("刷新错题")
+        layout.addWidget(refresh_btn)
         layout.addWidget(self.error_list)
-        self.refresh_error_list()
-        self.error_list.itemClicked.connect(self.show_error_detail)
+        refresh_btn.clicked.connect(self.load_errors)
+        self.load_errors()
         self.tab_widget.addTab(tab, "错题本")
 
-    def refresh_error_list(self):
+    def load_errors(self):
         self.error_list.clear()
-        err_list = get_all_errors()
-        for item in err_list:
-            display = f"ID:{item[0]} | 分类:{item[4]} | 时间:{item[5]}"
-            list_item = QListWidgetItem(display)
-            list_item.setData(100, item)
-            self.error_list.addItem(list_item)
+        data = get_all_errors()
+        for item in data:
+            _, code, err_desc, fix_code, knowledge, ctime = item
+            item_w = QListWidgetItem(f"{ctime}\n代码片段：{code[:60]}...")
+            self.error_list.addItem(item_w)
 
-    def show_error_detail(self, item):
-        data = item.data(100)
-        code = data[1]
-        desc = data[2]
-        QMessageBox.information(self, "错题详情", f"【错误代码】\n{code}\n\n【解析】\n{desc}")
-
-    # 4 刷题练习
+    # ========== 刷题标签页（预留） ==========
     def create_exam_tab(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        self.que_label = QLabel("点击「下一题」开始刷题")
-        self.ans_edit = QTextEdit()
-        self.ans_edit.setPlaceholderText("写下你的答案")
-        self.result_label = QLabel("作答结果：")
-
-        btn_layout = QHBoxLayout()
-        self.btn_next_que = QPushButton("下一题")
-        self.btn_submit_ans = QPushButton("提交答案")
-        btn_layout.addWidget(self.btn_next_que)
-        btn_layout.addWidget(self.btn_submit_ans)
-
-        layout.addWidget(self.que_label)
-        layout.addWidget(QLabel("你的作答"))
-        layout.addWidget(self.ans_edit)
-        layout.addLayout(btn_layout)
-        layout.addWidget(self.result_label)
-
-        self.current_que = None
-        self.btn_next_que.clicked.connect(self.load_next_question)
-        self.btn_submit_ans.clicked.connect(self.check_answer)
+        layout.addWidget(QLabel("刷题模块（V2拓展）"))
         self.tab_widget.addTab(tab, "刷题练习")
-
-    def load_next_question(self):
-        q = get_random_question()
-        if not q:
-            self.que_label.setText("暂无题库")
-            return
-        self.current_que = q
-        self.que_label.setText(f"题目：{q[1]}")
-        self.ans_edit.clear()
-        self.result_label.setText("作答结果：")
-
-    def check_answer(self):
-        if not self.current_que:
-            QMessageBox.warning(self, "提示", "请先获取题目")
-            return
-        user_ans = self.ans_edit.toPlainText().strip()
-        std = self.current_que[2]
-        self.result_label.setText(f"【参考答案】\n{std}\n【你的回答】\n{user_ans}")

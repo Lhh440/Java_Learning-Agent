@@ -1,14 +1,18 @@
 import sys
-from PyQt6.QtWidgets import QApplication
-from db.database import init_db, init_default_questions
+from PyQt6.QtWidgets import QApplication, QMessageBox
 from ui.main_window import MainWindow
+from core.ollama_manager import start_ollama_service
 
 if __name__ == "__main__":
-    # 初始化数据库+内置题库
-    init_db()
-    init_default_questions()
-
     app = QApplication(sys.argv)
-    win = MainWindow()
-    win.show()
+
+    # 自动检测并启动 Ollama 服务
+    ok, msg = start_ollama_service()
+    if not ok:
+        QMessageBox.critical(None, "环境检测", f"Ollama 服务异常：{msg}")
+        sys.exit(1)
+
+    # 启动主窗口
+    window = MainWindow()
+    window.show()
     sys.exit(app.exec())
